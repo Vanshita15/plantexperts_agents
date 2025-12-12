@@ -5,8 +5,8 @@ __pycache__/
 *.pyd
 
 # Virtual environments
-venv/
-env/
+.venv/
+.env/
 myenv/
 
 # Build
