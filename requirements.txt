@@ -1,0 +1,13 @@
+langchain
+langgraph
+langchain-core
+langchain-community
+python-dotenv
+langchain-openai
+langchain-groq
+langgraph-cli[inmem]
+Together
+request
+streamlit
+streamlit-folium
+psycopg2

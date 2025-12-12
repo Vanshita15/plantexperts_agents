@@ -1,0 +1,6 @@
+input_soil_data,expected_rating,expected_yield_qha,expected_fertilizer_kg_ha,expected_health_score,validation_criteria
+"Loamy, pH:7.2, N:120 med, P:30 med, K:150 med, OC:0.8%, Zn:1.2 adeq, Fe:15 adeq, WHC:35%",Good-Very Good,35-45 (Indore avg),N:80-100 split (urea),P:20-30,K:30-40,3.5-4.0/5,"pH optimal, N/K fair→topdress N, micronut good [web:29][web:30]"
+"Same but N:80 low",Fair,25-35,N:120-150 boost,P:30,K:40,2.5-3.0/5,"N deficiency→yield loss 20%, urgent urea [web:38]"
+"Same but pH:5.5 acidic",Poor,20-30,Lime 2t/ha + NPK,2.0/5,"Acid soil→P/Zn lockup [web:34]"
+"Same but Zn:0.4 def",Moderate,30-40,ZincSO4 25kg/ha + NPK,3.0/5,"Zn def common MP→chlorosis risk [web:37]"
+"Optimal: N:250 high, pH:6.8, Zn:2.0",Excellent,45-55,Maintenance N:40,P:15,K:20,4.5+/5,"High yield potential [web:31]"
