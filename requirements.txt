@@ -10,7 +10,7 @@ Together
 requests
 streamlit
 streamlit-folium
-psycopg2
+psycopg2-binary
 anthropic
 google-generativeai
 
