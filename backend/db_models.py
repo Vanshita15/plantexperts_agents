@@ -20,9 +20,41 @@ class User(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    triggered_agent_id = Column(String, nullable=False)
+    location = Column(String)
+    crop_name = Column(String)
+    crop_variety = Column(String)
+    sowing_date = Column(String)
+    model_name = Column(String)
+    created_at = Column(DateTime, default=func.now())
+
+
+class PromptEvent(Base):
+    __tablename__ = "prompt_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(String, nullable=False)
+    prompt_source = Column(String, nullable=False)  # 'system' | 'custom'
+    event_type = Column(String, nullable=False)  # 'edited' | 'used'
+    prompt = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+
+class PromptPreference(Base):
+    __tablename__ = "prompt_preferences"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(String, nullable=False, unique=True)
+    selected_source = Column(String, nullable=False)  # 'system' | 'custom'
+    selected_prompt = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
 class Soil(Base):
     __tablename__ = "soil"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     location = Column(String)
     crop_name = Column(String)
     model_name = Column(String)
@@ -34,6 +66,7 @@ class Soil(Base):
 class Weather(Base):
     __tablename__ = "weather"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     location = Column(String)
     crop_name = Column(String)
     model_name = Column(String)
@@ -46,6 +79,7 @@ class Weather(Base):
 class Water(Base):
     __tablename__ = "water"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     location = Column(String)
     crop_name = Column(String)
     model_name = Column(String)
@@ -58,6 +92,7 @@ class Water(Base):
 class Stage(Base):
     __tablename__ = "stage"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     location = Column(String)
     crop_name = Column(String)
     sowing_date = Column(String)
@@ -73,6 +108,7 @@ class Stage(Base):
 class Irrigation(Base):
     __tablename__ = "irrigation"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     location = Column(String)
     crop_name = Column(String)
     sowing_date = Column(String)
@@ -90,6 +126,7 @@ class Irrigation(Base):
 class Nutrient(Base):
     __tablename__ = "nutrient"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     crop_name = Column(String)
     crop_variety = Column(String)
     location = Column(String)
@@ -107,6 +144,7 @@ class Nutrient(Base):
 class Pest(Base):
     __tablename__ = "pest"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     crop_name = Column(String)
     crop_variety = Column(String)
     location = Column(String)
@@ -124,6 +162,7 @@ class Pest(Base):
 class Disease(Base):
     __tablename__ = "disease"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     crop_name = Column(String)
     crop_variety = Column(String)
     location = Column(String)
@@ -140,6 +179,7 @@ class Disease(Base):
 class Merge(Base):
     __tablename__ = "merge"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey('agent_runs.id'), nullable=True)
     soil = Column(Text)
     nutrient = Column(Text)
     irrigation = Column(Text)

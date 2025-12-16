@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from together import Together
 from dataclasses import dataclass
 from openai import OpenAI
+from llm_router import call_llm
+
 from langgraph.graph import StateGraph
 from soil import FarmerInput
 from soil import run_soil_agent
@@ -53,13 +55,13 @@ stage_system_prompt = """
     - Water stress → delayed flowering
 
     RULES:
-    ✅ Use crop-specific stage names
-    ✅ Calculate realistic durations
-    ✅ Consider all provided data (soil, water, weather)
-    ✅ Output ONLY the format above
-    ❌ NO duplicates
-    ❌ NO irrigation/fertilizer advice here
-    ❌ NO extra explanations
+    Use crop-specific stage names
+    Calculate realistic durations
+    Consider all provided data (soil, water, weather)
+    Output ONLY the format above
+    NO duplicates
+    NO irrigation/fertilizer advice here
+    NO extra explanations
 
     OUTPUT FORMAT (STRICT - NO DUPLICATES):
 
@@ -122,7 +124,7 @@ def stage_planner_agent(
     max_tokens: int = 1200,
     custom_prompt: str = None,
     model: str = None,
-    save_to_db: bool = True  # ✅ This will now work!
+    save_to_db: bool = True  # This will now work!
 ) -> str:
     """Build prompt correctly and call Together/Qwen, return plain-text model output."""
     if model_name is None:
@@ -143,11 +145,12 @@ def stage_planner_agent(
     def esc(s: str) -> str:
         return (s or "").replace("{", "{{").replace("}", "}}")
 
-    # ✅ Use custom_prompt if provided, else default
+    # Use custom_prompt if provided, else default
     system_prompt = custom_prompt if custom_prompt else stage_system_prompt
     chosen_model = model if model else llama_model_name
     print("---------------------------------chosen model-----------------",chosen_model)
-    # ✅ Format the prompt with actual data
+
+    # Format the prompt with actual data
     user_message = system_prompt.format(
         location=esc(location),
         crop=esc(crop),
@@ -157,41 +160,17 @@ def stage_planner_agent(
         weather_report=esc(weather_report),
         today_date=esc(str(today_date)),
     )
-    from openai import OpenAI
-    if chosen_model == "gpt-4.1":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return "Error: OPENAI_API_KEY not set in environment."
-        openai_client = OpenAI(api_key=api_key)
-        try:
-            resp = openai_client.chat.completions.create(
-                model=chosen_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            text = resp.choices[0].message.content.strip()
-            return text,system_prompt
-        except Exception as e:
-            return f"Error calling OpenAI GPT-4.1: {e}"
-    else:
-        try:
-            client = Together()
-            resp = client.chat.completions.create(
-                model=chosen_model,
-                messages=[
-                    {"role": "user", "content": user_message},  # Only one message now
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            text = resp.choices[0].message.content.strip()
-            return text,system_prompt
-        except Exception as e:
-            return f"Error calling StagePlanner model: {e}"
+    try:
+        text = call_llm(
+            model=chosen_model,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return text, system_prompt
+    except Exception as e:
+        return f"Error calling StagePlanner model: {e}"
 
 def parse_stage_plan_and_current_stage(report_text, sowing_date_str):
     """
@@ -294,7 +273,8 @@ def stage_generation(
     soil_data=None, 
     water_data=None, 
     weather_data=None,
-    session_state=None  # NEW: pass session_state
+    session_state=None,  # NEW: pass session_state
+    run_id: int = None
     ):  
 
     system_prompt = None
@@ -321,9 +301,9 @@ def stage_generation(
     
     # Fetch dependencies intelligently (checks session/DB first)
     dependencies = {
-        'soil': (soil_data, get_or_fetch_soil, [farmer_input, session_state or {}, model, latitude, longitude]),
-        'water': (water_data, get_or_fetch_water, [farmer_input, session_state or {}, model]),
-        'weather': (weather_data, get_or_fetch_weather, [farmer_input, session_state or {}, latitude, longitude])
+        'soil': (soil_data, get_or_fetch_soil, [farmer_input, session_state or {}, model, latitude, longitude, run_id]),
+        'water': (water_data, get_or_fetch_water, [farmer_input, session_state or {}, model, run_id]),
+        'weather': (weather_data, get_or_fetch_weather, [farmer_input, session_state or {}, latitude, longitude, "", run_id])
     }
     
     for name, (data, func, args) in dependencies.items():
@@ -401,7 +381,8 @@ def stage_generation(
                     weather_id=ids['weather'],
                     model_name=model,
                     prompt=system_prompt,
-                    output=final_report
+                    output=final_report,
+                    run_id=run_id
                 )
                 
                 # Return with ID for future reference

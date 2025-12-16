@@ -10,6 +10,7 @@ from soil import FarmerInput, run_soil_agent
 from stage_agent import stage_generation
 from water import water_agent
 from weather import weather_7day_compact
+from llm_router import call_llm
 
 
 load_dotenv()
@@ -142,7 +143,8 @@ def pest_agent(
     temperature: float = 0.2,
     max_tokens: int = 1200,
     model: str = None,
-    save_to_db: bool = True
+    save_to_db: bool = True,
+    run_id: int = None
 ) -> dict:
     """
     Pest agent:
@@ -168,11 +170,11 @@ def pest_agent(
 
     # 1) ensure dependent data exists (DB/session first) - only fetch if not provided
     if soil_data is None:
-        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, chosen_model, latitude, longitude)
+        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, chosen_model, latitude, longitude, run_id=run_id)
     if water_data is None:
-        water_data = get_or_fetch_water(farmer_input, session_state or {}, chosen_model)
+        water_data = get_or_fetch_water(farmer_input, session_state or {}, chosen_model, run_id=run_id)
     if weather_data is None:
-        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, model_name=chosen_model)
+        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, model_name=chosen_model, run_id=run_id)
     if stages_data is None:
         stages_data = get_or_fetch_stage(
             farmer_input,
@@ -182,7 +184,8 @@ def pest_agent(
             longitude,
             soil_data if soil_data else None,
             water_data if water_data else None,
-            weather_data if weather_data else None
+            weather_data if weather_data else None,
+            run_id=run_id,
         )
 
     # 2) normalize outputs -> plain text for prompt
@@ -250,36 +253,13 @@ Also give an overall risk level for this stage and short weather-based alerts. K
 
         # call model
         try:
-            if chosen_model == "gpt-4.1":
-                from openai import OpenAI
-                api_key = os.getenv("OPENAI_API_KEY")
-                if not api_key:
-                    results.append(f"Error: OPENAI_API_KEY not set for stage {stage_name}")
-                    continue
-                openai_client = OpenAI(api_key=api_key)
-                resp = openai_client.chat.completions.create(
-                    model=chosen_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                text = resp.choices[0].message.content.strip()
-            else:
-                client = Together()
-                resp = client.chat.completions.create(
-                    model=chosen_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                text = resp.choices[0].message.content.strip()
-
+            text = call_llm(
+                model=chosen_model,
+                system_prompt=system_prompt,
+                user_message=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
             header = f"--- Pest Risk for {stage_name} ({start_date} to {end_date}) ---"
             results.append(header + "\n" + text)
 
@@ -314,7 +294,8 @@ Also give an overall risk level for this stage and short weather-based alerts. K
                     weather_id=weather_id,
                     model_name=chosen_model,
                     prompt=system_prompt,
-                    output=out
+                    output=out,
+                    run_id=run_id,
                 )
                 return {"output": out, "id": pest_row.id}
         except Exception as db_ex:

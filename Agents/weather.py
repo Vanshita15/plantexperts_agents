@@ -29,22 +29,52 @@ TZ_OFFSET_FALLBACK = {"Asia/Kolkata": 5.5, "UTC": 0.0}
 
 
 def geocode_location(location: str):
-    """Geocode a location using Open-Meteo API."""
-    url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {"name": location, "count": 1, "language": "en", "format": "json"}
-    r = requests.get(url, params=params, timeout=10)
-    r.raise_for_status()
-    data = r.json()
-    if "results" in data and len(data["results"]) > 0:
-        res = data["results"][0]
-        return {
-            "name": res.get("name"),
-            "latitude": res.get("latitude"),
-            "longitude": res.get("longitude"),
-            "country": res.get("country"),
-            "admin1": res.get("admin1"),
-            "timezone": res.get("timezone")
+    """Geocode a location using Open-Meteo API with a Nominatim fallback."""
+    try:
+        url = "https://geocoding-api.open-meteo.com/v1/search"
+        params = {"name": location, "count": 1, "language": "en", "format": "json"}
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if "results" in data and len(data["results"]) > 0:
+            res = data["results"][0]
+            return {
+                "name": res.get("name"),
+                "latitude": res.get("latitude"),
+                "longitude": res.get("longitude"),
+                "country": res.get("country"),
+                "admin1": res.get("admin1"),
+                "timezone": res.get("timezone")
+            }
+    except Exception:
+        pass
+
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            "q": location,
+            "format": "json",
+            "limit": 1,
+            "addressdetails": 1,
         }
+        headers = {"User-Agent": "CropAdvisorySystem/1.0 (your@email.com)"}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0:
+            res = data[0]
+            addr = res.get("address", {}) or {}
+            return {
+                "name": res.get("display_name") or location,
+                "latitude": float(res.get("lat")) if res.get("lat") is not None else None,
+                "longitude": float(res.get("lon")) if res.get("lon") is not None else None,
+                "country": addr.get("country", "Unknown"),
+                "admin1": addr.get("state", ""),
+                "timezone": "Asia/Kolkata",
+            }
+    except Exception:
+        pass
+
     return None
 
 
@@ -233,7 +263,7 @@ def format_compact_table(geo, metrics, sample):
     return "\n".join(lines)
 
 
-def weather_7day_compact(location: str = None, days: int = 7, latitude: float = None, longitude: float = None, crop_name: str = "", save_to_db: bool = True, model_name: str = ""):
+def weather_7day_compact(location: str = None, days: int = 7, latitude: float = None, longitude: float = None, crop_name: str = "", save_to_db: bool = True, model_name: str = "", run_id: int = None):
     """
     Fetch 7-day weather forecast using either:
     1. latitude/longitude (preferred if provided)
@@ -292,7 +322,8 @@ def weather_7day_compact(location: str = None, days: int = 7, latitude: float = 
                     crop_name,
                     model_name,
                     "",
-                    output_str
+                    output_str,
+                    run_id=run_id
                 )
                 print("-----------------------object>",obj)
                 print("weather object id ----------------->",obj.id)

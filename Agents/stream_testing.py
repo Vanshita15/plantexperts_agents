@@ -101,6 +101,342 @@ st.markdown("""
 # Title
 st.markdown('<h1 class="main-header">🌾 Crop Advisory System</h1>', unsafe_allow_html=True)
 
+try:
+    from backend.init_db import init_db
+    init_db()
+except Exception:
+    pass
+
+def _load_prompt_preference(agent_id: str):
+    try:
+        from backend.init_db import SessionLocal
+        from backend.data_store import get_prompt_preference
+        with SessionLocal() as session:
+            pref = get_prompt_preference(session, agent_id)
+            if pref is None:
+                return None
+            return {
+                'selected_source': pref.selected_source,
+                'selected_prompt': pref.selected_prompt,
+            }
+    except Exception:
+        return None
+
+
+def _save_prompt_preference(agent_id: str, selected_source: str, selected_prompt: str = None):
+    try:
+        from backend.init_db import SessionLocal
+        from backend.data_store import upsert_prompt_preference
+        with SessionLocal() as session:
+            upsert_prompt_preference(
+                session,
+                agent_id=agent_id,
+                selected_source=selected_source,
+                selected_prompt=selected_prompt,
+            )
+    except Exception:
+        pass
+
+
+def _save_prompt_event(agent_id: str, prompt_source: str, event_type: str, prompt: str):
+    try:
+        from backend.init_db import SessionLocal
+        from backend.data_store import save_prompt_event
+        with SessionLocal() as session:
+            save_prompt_event(
+                session,
+                agent_id=agent_id,
+                prompt_source=prompt_source,
+                event_type=event_type,
+                prompt=prompt,
+            )
+    except Exception:
+        pass
+
+
+def _get_recent_prompt_events(agent_id: str, limit: int = 5):
+    try:
+        from backend.init_db import SessionLocal
+        from backend.data_store import get_recent_prompt_events
+        with SessionLocal() as session:
+            return get_recent_prompt_events(session, agent_id, limit=limit)
+    except Exception:
+        return []
+
+
+def _orm_to_dict(obj):
+    if obj is None:
+        return None
+    try:
+        return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+    except Exception:
+        return {k: getattr(obj, k) for k in dir(obj) if not k.startswith('_')}
+
+
+def _fetch_latest_db_snapshot(limit: int = 20):
+    try:
+        from backend.init_db import SessionLocal
+        from backend.db_models import Soil, Water, Weather, Stage, Nutrient, Pest, Disease, Irrigation, Merge
+        with SessionLocal() as session:
+            def _q(model):
+                q = session.query(model).order_by(model.created_at.desc())
+                if limit is None:
+                    return q.all()
+                return q.limit(limit).all()
+            return {
+                'soil': _q(Soil),
+                'water': _q(Water),
+                'weather': _q(Weather),
+                'stage': _q(Stage),
+                'nutrient': _q(Nutrient),
+                'pest': _q(Pest),
+                'disease': _q(Disease),
+                'irrigation': _q(Irrigation),
+                'merge': _q(Merge),
+            }
+    except Exception:
+        return None
+
+
+def _render_db_snapshot(snapshot, title: str = "Database (latest rows)"):
+    st.markdown(f"## {title}")
+    if not snapshot:
+        st.caption("No snapshot available.")
+        return
+
+    def _df(rows):
+        return [_orm_to_dict(r) for r in (rows or [])]
+
+    tab_soil, tab_water, tab_weather, tab_stage, tab_nutrient, tab_pest, tab_disease, tab_irrigation, tab_merge = st.tabs([
+        "Soil",
+        "Water",
+        "Weather",
+        "Stage",
+        "Nutrient",
+        "Pest",
+        "Disease",
+        "Irrigation",
+        "Merge",
+    ])
+
+    with tab_soil:
+        st.dataframe(_df(snapshot.get('soil')), use_container_width=True)
+    with tab_water:
+        st.dataframe(_df(snapshot.get('water')), use_container_width=True)
+    with tab_weather:
+        st.dataframe(_df(snapshot.get('weather')), use_container_width=True)
+    with tab_stage:
+        st.dataframe(_df(snapshot.get('stage')), use_container_width=True)
+    with tab_nutrient:
+        st.dataframe(_df(snapshot.get('nutrient')), use_container_width=True)
+    with tab_pest:
+        st.dataframe(_df(snapshot.get('pest')), use_container_width=True)
+    with tab_disease:
+        st.dataframe(_df(snapshot.get('disease')), use_container_width=True)
+    with tab_irrigation:
+        st.dataframe(_df(snapshot.get('irrigation')), use_container_width=True)
+    with tab_merge:
+        st.dataframe(_df(snapshot.get('merge')), use_container_width=True)
+
+
+nav = st.radio(
+    "Navigation",
+    options=["Agents", "Logs"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+if nav == "Logs":
+    st.markdown("## Logs")
+    try:
+        from backend.init_db import SessionLocal
+        import importlib
+        import backend.data_store as data_store
+        data_store = importlib.reload(data_store)
+
+        list_agent_runs = getattr(data_store, 'list_agent_runs', None)
+        get_run_snapshot = getattr(data_store, 'get_run_snapshot', None)
+        if list_agent_runs is None or get_run_snapshot is None:
+            st.error(
+                "Logs helpers are missing from backend.data_store. "
+                "Please restart Streamlit to reload the latest code."
+            )
+            st.stop()
+        view_runs, view_db = st.tabs(["Runs", "Database"])
+
+        with view_runs:
+            show_all = st.checkbox("Show all runs", value=False)
+            run_limit = None
+            if not show_all:
+                run_limit = st.number_input("Max runs to load", min_value=10, max_value=5000, value=200, step=50)
+
+            with SessionLocal() as session:
+                runs = list_agent_runs(session, limit=None if show_all else int(run_limit))
+
+            if not runs:
+                st.info("No runs logged yet. Run any agent to create a log entry.")
+                st.stop()
+
+            run_options = {}
+            for r in runs:
+                created = getattr(r, 'created_at', None)
+                created_str = str(created) if created else ""
+                label = f"Run {getattr(r, 'id', '')} | {getattr(r, 'triggered_agent_id', '')} | {created_str}"
+                if getattr(r, 'location', None):
+                    label += f" | {getattr(r, 'location')}"
+                if getattr(r, 'crop_name', None):
+                    label += f" | {getattr(r, 'crop_name')}"
+                run_options[label] = getattr(r, 'id', None)
+
+            selected_label = st.selectbox("Select a run", options=list(run_options.keys()))
+            selected_run_id = run_options.get(selected_label)
+
+            with SessionLocal() as session:
+                snapshot = get_run_snapshot(session, selected_run_id)
+
+            if not snapshot:
+                st.warning("Run not found.")
+                st.stop()
+
+            run_row = snapshot.get('run')
+            with st.expander("Run metadata", expanded=True):
+                st.json(_orm_to_dict(run_row))
+
+            def _render_rows_with_detail(title: str, rows):
+                data = [_orm_to_dict(r) for r in (rows or [])]
+                if not data:
+                    st.caption("No rows.")
+                    return
+
+                st.dataframe(data, use_container_width=True)
+
+                row_id_options = []
+                for d in data:
+                    rid = d.get('id')
+                    if rid is not None:
+                        row_id_options.append(rid)
+
+                if not row_id_options:
+                    return
+
+                selected_row_id = st.selectbox(
+                    f"Open full {title} report",
+                    options=row_id_options,
+                    key=f"log_select_{title}_{selected_run_id}",
+                )
+                selected_row = next((d for d in data if d.get('id') == selected_row_id), None)
+                if not selected_row:
+                    return
+
+                prompt_text = selected_row.get('prompt')
+                output_text = selected_row.get('output')
+
+                if prompt_text is not None:
+                    st.markdown("**Prompt**")
+                    st.text_area(
+                        "",
+                        value=str(prompt_text),
+                        height=220,
+                        disabled=True,
+                        key=f"log_prompt_{title}_{selected_run_id}_{selected_row_id}",
+                    )
+                if output_text is not None:
+                    st.markdown("**Output**")
+                    st.text_area(
+                        " ",
+                        value=str(output_text),
+                        height=420,
+                        disabled=True,
+                        key=f"log_output_{title}_{selected_run_id}_{selected_row_id}",
+                    )
+
+            linked = snapshot.get('linked') or {}
+
+            tab_soil, tab_water, tab_weather, tab_stage, tab_nutrient, tab_pest, tab_disease, tab_irrigation, tab_merge = st.tabs([
+                "Soil",
+                "Water",
+                "Weather",
+                "Stage",
+                "Nutrient",
+                "Pest",
+                "Disease",
+                "Irrigation",
+                "Merge",
+            ])
+
+            with tab_soil:
+                _render_rows_with_detail("Soil", snapshot.get('soil'))
+
+            with tab_water:
+                _render_rows_with_detail("Water", snapshot.get('water'))
+
+            with tab_weather:
+                _render_rows_with_detail("Weather", snapshot.get('weather'))
+
+            with tab_stage:
+                st.markdown("### Stage")
+                _render_rows_with_detail("Stage", snapshot.get('stage'))
+
+                st.markdown("### Dependencies used by Stage")
+                stage_rows = snapshot.get('stage') or []
+                if stage_rows:
+                    stage_deps = []
+                    for srow in stage_rows:
+                        stage_deps.append({
+                            'stage_id': getattr(srow, 'id', None),
+                            'soil_id': getattr(srow, 'soil_id', None),
+                            'water_id': getattr(srow, 'water_id', None),
+                            'weather_id': getattr(srow, 'weather_id', None),
+                        })
+                    st.dataframe(stage_deps, use_container_width=True)
+                else:
+                    st.caption("No Stage rows.")
+
+                dep_soil, dep_water, dep_weather = st.tabs([
+                    "Soil (referenced)",
+                    "Water (referenced)",
+                    "Weather (referenced)",
+                ])
+                with dep_soil:
+                    _render_rows_with_detail("Soil_ref", linked.get('soil'))
+                with dep_water:
+                    _render_rows_with_detail("Water_ref", linked.get('water'))
+                with dep_weather:
+                    _render_rows_with_detail("Weather_ref", linked.get('weather'))
+
+            with tab_nutrient:
+                _render_rows_with_detail("Nutrient", snapshot.get('nutrient'))
+
+            with tab_pest:
+                _render_rows_with_detail("Pest", snapshot.get('pest'))
+
+            with tab_disease:
+                _render_rows_with_detail("Disease", snapshot.get('disease'))
+
+            with tab_irrigation:
+                _render_rows_with_detail("Irrigation", snapshot.get('irrigation'))
+
+            with tab_merge:
+                _render_rows_with_detail("Merge", snapshot.get('merge'))
+
+        with view_db:
+            st.markdown("### Database")
+            show_all_rows = st.checkbox("Show all rows (may be slow)", value=True)
+            db_limit = None
+            if not show_all_rows:
+                db_limit = st.number_input("Max rows per table", min_value=10, max_value=10000, value=500, step=100)
+            _render_db_snapshot(_fetch_latest_db_snapshot(limit=None if show_all_rows else int(db_limit)), title="Database")
+
+        st.stop()
+    except Exception as e:
+        st.error(f"Failed to load logs: {e}")
+        st.stop()
+
+
+if nav == "Agents":
+    pass
+
+
 # Initialize session state
 if 'selected_agent' not in st.session_state:
     st.session_state.selected_agent = None
@@ -108,14 +444,20 @@ if 'agent_outputs' not in st.session_state:
     st.session_state.agent_outputs = {}
 if 'custom_prompts' not in st.session_state:
     st.session_state.custom_prompts = {}
+if 'prompt_source_preference' not in st.session_state:
+    st.session_state.prompt_source_preference = {}
 if 'temperature' not in st.session_state:
     st.session_state.temperature = 0.2
 if 'max_tokens' not in st.session_state:
     st.session_state.max_tokens = 1500
+
 if 'location_coords' not in st.session_state:
     st.session_state.location_coords = None
 if 'selected_model' not in st.session_state:
     st.session_state.selected_model = "claude-sonnet-4-20250514"
+
+if 'last_run_id' not in st.session_state:
+    st.session_state.last_run_id = None
 
 # Default prompts
 DEFAULT_PROMPTS = {
@@ -129,10 +471,29 @@ DEFAULT_PROMPTS = {
     'merge': Merge_system_prompt
 }
 
+if 'default_prompts_snapshot' not in st.session_state:
+    st.session_state.default_prompts_snapshot = {}
+
+for key, value in DEFAULT_PROMPTS.items():
+    prev_default = st.session_state.default_prompts_snapshot.get(key)
+    if prev_default is not None and st.session_state.custom_prompts.get(key) == prev_default:
+        st.session_state.custom_prompts[key] = value
+    st.session_state.default_prompts_snapshot[key] = value
+
 # Initialize custom prompts
 for key, value in DEFAULT_PROMPTS.items():
     if key not in st.session_state.custom_prompts:
         st.session_state.custom_prompts[key] = value
+
+for key in DEFAULT_PROMPTS.keys():
+    if key not in st.session_state.prompt_source_preference:
+        pref = _load_prompt_preference(key)
+        if pref and pref.get('selected_source') in ('system', 'custom'):
+            st.session_state.prompt_source_preference[key] = pref['selected_source']
+            if pref.get('selected_source') == 'custom' and pref.get('selected_prompt'):
+                st.session_state.custom_prompts[key] = pref['selected_prompt']
+        else:
+            st.session_state.prompt_source_preference[key] = 'custom'
 
 # Agent definitions
 AGENTS = [
@@ -160,8 +521,10 @@ with st.sidebar:
         model_options = {
             "Qwen2.5-72B-Turbo (Together)": "Qwen/Qwen2.5-72B-Instruct-Turbo",
             "Meta-Llama-3.1-70B-Instruct-Turbo (Together)": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-            "Sonnet 4.5 (API)": "sonnet-4.5",
             "GPT-4.1 (API)": "gpt-4.1",
+            "Claude 3.5 Sonnet (Anthropic)": "claude-3-5-sonnet-20240620",
+            "Claude 3.5 Haiku (Anthropic)": "claude-3-5-haiku-20241022",
+            "Gemini 2.5 Flash (Google)": "gemini-2.5-flash",
         }
         selected_model_name = st.selectbox(
             "Select Model",
@@ -189,8 +552,41 @@ with st.sidebar:
         
         # Location with Map
         st.subheader("📍 Location")
-        location_name = st.text_input("Location Name (optional)", key="location_name_input", value=st.session_state.get("location_name", ""), help="Used only if map coordinates not selected")
-        
+        location_name = st.text_input(
+            "Location Name (optional)",
+            key="location_name_input",
+            value=st.session_state.get("location_name", ""),
+            help="Used only if map coordinates not selected",
+        )
+
+        if 'last_geocoded_location' not in st.session_state:
+            st.session_state.last_geocoded_location = None
+
+        col_loc_a, col_loc_b = st.columns([1, 1])
+        with col_loc_a:
+            locate_clicked = st.form_submit_button("Locate on map", use_container_width=True)
+        with col_loc_b:
+            clear_loc_clicked = st.form_submit_button("Clear map location", use_container_width=True)
+
+        if clear_loc_clicked:
+            st.session_state.location_coords = None
+            st.session_state.last_geocoded_location = None
+
+        if locate_clicked and location_name:
+            if st.session_state.last_geocoded_location != location_name:
+                try:
+                    from weather import geocode_location
+                    geo = geocode_location(location_name)
+                    if geo and geo.get('latitude') is not None and geo.get('longitude') is not None:
+                        st.session_state.location_coords = [geo['latitude'], geo['longitude']]
+                        st.session_state.location_name = geo.get('name') or location_name
+                        st.session_state.last_geocoded_location = location_name
+                        st.rerun()
+                    else:
+                        st.warning("Could not find this location. Try a more specific name (district/state/country).")
+                except Exception as e:
+                    st.warning(f"Location lookup failed: {e}")
+
         st.markdown("**📌 Draw polygon or place marker on map:**")
         
         # Initialize map
@@ -200,6 +596,15 @@ with st.sidebar:
             center = st.session_state.location_coords
         
         m = folium.Map(location=center, zoom_start=12)
+
+        try:
+            if st.session_state.location_coords is not None:
+                folium.Marker(
+                    location=st.session_state.location_coords,
+                    tooltip=st.session_state.get('location_name', 'Selected location'),
+                ).add_to(m)
+        except Exception:
+            pass
 
         # Add fullscreen control
         Fullscreen(position='topright', title='Full Screen', title_cancel='Exit Full Screen', force_separate_button=True).add_to(m)
@@ -478,6 +883,7 @@ if st.session_state.form_submitted:
         st.write(f"**Location:** {loc_display}")
         if data.get('location_coords'):
             st.write(f"**Coordinates:** {data['location_coords'][0]:.4f}, {data['location_coords'][1]:.4f}")
+        
         st.write(f"**Sowing Date:** {data['sowing_date']}")
         st.write(f"**Area:** {data['area']} ha")
         st.write(f"**Model:** {data['model']}")
@@ -515,127 +921,141 @@ if st.session_state.form_submitted:
             st.write(f"**Last Season Pest Pressure:** {data['last_season_pest_pressure']}")
         if data.get('last_season_disease_pressure'):
             st.write(f"**Last Season Disease Pressure:** {data['last_season_disease_pressure']}")
-    
+
     if st.button("🚀 Run All Agents", use_container_width=True, type="primary"):
         with st.spinner("Running all agents..."):
             try:
                 from user_input import get_farmer_input_from_session
                 farmer_input = get_farmer_input_from_session(st.session_state)
-                
-                agent_id = st.session_state.selected_agent
-                
+
+                from backend.init_db import SessionLocal
+                from backend.data_store import create_agent_run
+                with SessionLocal() as session:
+                    run = create_agent_run(
+                        session,
+                        triggered_agent_id="all",
+                        location=getattr(farmer_input, 'location', None),
+                        crop_name=getattr(farmer_input, 'crop_name', None),
+                        crop_variety=getattr(farmer_input, 'crop_variety', None),
+                        sowing_date=getattr(farmer_input, 'sowing_date', None),
+                        model_name=st.session_state.selected_model,
+                    )
+                    run_id = run.id
+                st.session_state.last_run_id = run_id
+
                 # Get coordinates
                 lat = st.session_state.location_coords[0] if st.session_state.location_coords else None
                 lon = st.session_state.location_coords[1] if st.session_state.location_coords else None
-                
-                if agent_id == 'soil':
-                    output = run_soil_agent(
-                        location=farmer_input.location,
-                        crop_name=farmer_input.crop_name,
-                        crop_variety=farmer_input.crop_variety,
-                        sowing_date=farmer_input.sowing_date,
-                        area=farmer_input.area,
-                        latitude=lat,
-                        longitude=lon,
-                        soil_type="",
-                        custom_prompt=st.session_state.custom_prompts['soil'],
-                        model=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                    )
-                    
-                elif agent_id == 'water':
-                    output = water_agent(
-                        farmer_input,
-                        custom_prompt=st.session_state.custom_prompts['water'],
-                        model=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                    )
-                    
-                elif agent_id == 'weather':
-                    output = weather_7day_compact(
-                        location=farmer_input.location,
-                        latitude=lat,
-                        longitude=lon,
-                        days=7,
-                        save_to_db=True,
-                        model_name=st.session_state.selected_model
-                    )
-                    
-                elif agent_id == 'stage':
-                    output = stage_generation(
-                        farmer_input,
-                        model=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                        latitude=lat,
-                        longitude=lon,
-                        session_state=st.session_state  # PASS SESSION STATE
-                    )
-                    
-                elif agent_id == 'nutrient':
-                    output = nutrient_agent(
-                        farmer_input,
-                        custom_prompt=st.session_state.custom_prompts['nutrient'],
-                        model=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                        session_state=st.session_state,  # PASS SESSION STATE
-                        latitude=lat,
-                        longitude=lon
-                    )
-                    
-                elif agent_id == 'pest':
-                    output = pest_agent(
-                        farmer_input,
-                        custom_prompt=st.session_state.custom_prompts['pest'],
-                        model=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                        session_state=st.session_state,
-                        latitude=lat,
-                        longitude=lon
-                    )
-                    
-                elif agent_id == 'disease':
-                    output = disease_agent(
-                        farmer_input,
-                        custom_prompt=st.session_state.custom_prompts['disease'],
-                        model=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                        latitude=lat,
-                        longitude=lon
-                    )
-                    
-                elif agent_id == 'irrigation':
-                    output = irrigation_agent(
-                        farmer_input,
-                        custom_prompt=st.session_state.custom_prompts['irrigation'],
-                        model_name=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                        latitude=lat,
-                        longitude=lon,
-                    )
-                    
-                elif agent_id == 'merge':
-                    output = merge_agent(
-                        soil=st.session_state.agent_outputs.get('soil'),
-                        nutrient=st.session_state.agent_outputs.get('nutrient'),
-                        irrigation=st.session_state.agent_outputs.get('irrigation'),
-                        pest=st.session_state.agent_outputs.get('pest'),
-                        disease=st.session_state.agent_outputs.get('disease'),
-                        weather=st.session_state.agent_outputs.get('weather'),
-                        stage=st.session_state.agent_outputs.get('stage'),
-                        custom_prompt=st.session_state.custom_prompts['merge'],
-                        model_name=st.session_state.selected_model,
-                        temperature=st.session_state.temperature,
-                        max_tokens=st.session_state.max_tokens,
-                    )
-                
-                st.session_state.agent_outputs[agent_id] = output
+
+                # Run each agent under the same run_id
+                st.session_state.agent_outputs['soil'] = run_soil_agent(
+                    location=farmer_input.location,
+                    crop_name=farmer_input.crop_name,
+                    crop_variety=farmer_input.crop_variety,
+                    sowing_date=farmer_input.sowing_date,
+                    area=farmer_input.area,
+                    latitude=lat,
+                    longitude=lon,
+                    soil_type="",
+                    custom_prompt=st.session_state.custom_prompts['soil'],
+                    model=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['water'] = water_agent(
+                    farmer_input,
+                    custom_prompt=st.session_state.custom_prompts['water'],
+                    model=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['weather'] = weather_7day_compact(
+                    location=farmer_input.location,
+                    latitude=lat,
+                    longitude=lon,
+                    days=7,
+                    save_to_db=True,
+                    model_name=st.session_state.selected_model,
+                    crop_name=farmer_input.crop_name,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['stage'] = stage_generation(
+                    farmer_input,
+                    model=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    latitude=lat,
+                    longitude=lon,
+                    session_state=st.session_state,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['nutrient'] = nutrient_agent(
+                    farmer_input,
+                    custom_prompt=st.session_state.custom_prompts['nutrient'],
+                    model=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    session_state=st.session_state,
+                    latitude=lat,
+                    longitude=lon,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['pest'] = pest_agent(
+                    farmer_input,
+                    custom_prompt=st.session_state.custom_prompts['pest'],
+                    model=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    session_state=st.session_state,
+                    latitude=lat,
+                    longitude=lon,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['disease'] = disease_agent(
+                    farmer_input,
+                    custom_prompt=st.session_state.custom_prompts['disease'],
+                    model=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    session_state=st.session_state,
+                    latitude=lat,
+                    longitude=lon,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['irrigation'] = irrigation_agent(
+                    farmer_input,
+                    custom_prompt=st.session_state.custom_prompts['irrigation'],
+                    model_name=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                    session_state=st.session_state,
+                    latitude=lat,
+                    longitude=lon,
+                    run_id=run_id,
+                )
+
+                st.session_state.agent_outputs['merge'] = merge_agent(
+                    soil=st.session_state.agent_outputs.get('soil'),
+                    nutrient=st.session_state.agent_outputs.get('nutrient'),
+                    irrigation=st.session_state.agent_outputs.get('irrigation'),
+                    pest=st.session_state.agent_outputs.get('pest'),
+                    disease=st.session_state.agent_outputs.get('disease'),
+                    weather=st.session_state.agent_outputs.get('weather'),
+                    stage=st.session_state.agent_outputs.get('stage'),
+                    custom_prompt=st.session_state.custom_prompts['merge'],
+                    model_name=st.session_state.selected_model,
+                    temperature=st.session_state.temperature,
+                    max_tokens=st.session_state.max_tokens,
+                )
                 st.success("✅ Agent completed successfully!")
                 st.rerun()
                 
@@ -643,22 +1063,25 @@ if st.session_state.form_submitted:
                 st.error(f"❌ Error: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
-# Main Content Area - Agent Selection Pills
-st.markdown("### Select an Agent")
 
-# Create agent pills
-cols = st.columns(len(AGENTS))
-for idx, agent in enumerate(AGENTS):
-    with cols[idx]:
-        if st.button(
-            f"{agent['icon']} {agent['name'].split()[-1]}",
-            key=f"agent_{agent['id']}",
-            use_container_width=True
-        ):
-            st.session_state.selected_agent = agent['id']
-            st.rerun()
+# Main Content Area - Agent Selection
+if st.session_state.form_submitted:
+    st.markdown("### Select an Agent")
+    cols = st.columns(len(AGENTS))
+    for idx, agent in enumerate(AGENTS):
+        with cols[idx]:
+            if st.button(
+                f"{agent['icon']} {agent['name'].split()[-1]}",
+                key=f"agent_{agent['id']}",
+                use_container_width=True,
+            ):
+                st.session_state.selected_agent = agent['id']
+                st.rerun()
 
-st.markdown("---")
+    st.markdown("---")
+
+else:
+    st.info("👈 Submit inputs from the sidebar to enable agent runs")
 
 # Display Prompt and Output
 if st.session_state.selected_agent:
@@ -678,59 +1101,183 @@ if st.session_state.selected_agent:
             st.info("Weather agent uses API - no custom prompt available")
             current_prompt = "Weather data fetched from API"
         else:
-            current_prompt = st.session_state.custom_prompts.get(
-                prompt_key,
-                DEFAULT_PROMPTS.get(prompt_key, "")
+            selected_source = st.session_state.prompt_source_preference.get(prompt_key, 'custom')
+
+            selected_source = st.radio(
+                "Prompt to use next",
+                options=['custom', 'system'],
+                index=0 if selected_source == 'custom' else 1,
+                horizontal=True,
+                key=f"prompt_source_{prompt_key}",
             )
-            
-            edited_prompt = st.text_area(
-                "Edit Prompt:",
-                value=current_prompt,
-                height=400,
-                key=f"prompt_editor_{prompt_key}"
+            st.session_state.prompt_source_preference[prompt_key] = selected_source
+            _save_prompt_preference(
+                agent_id=prompt_key,
+                selected_source=selected_source,
+                selected_prompt=st.session_state.custom_prompts.get(prompt_key) if selected_source == 'custom' else None,
             )
-            
-            st.session_state.custom_prompts[prompt_key] = edited_prompt
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("🔄 Reset to Default", key=f"reset_{prompt_key}"):
-                    st.session_state.custom_prompts[prompt_key] = DEFAULT_PROMPTS[prompt_key]
-                    st.rerun()
-            with col_b:
-                st.download_button(
-                    "📥 Download",
-                    data=edited_prompt,
-                    file_name=f"{prompt_key}_prompt.txt",
-                    mime="text/plain"
+
+            # Detect most recent custom prompt from history
+            recent_events = _get_recent_prompt_events(prompt_key, limit=25)
+            most_recent_custom = None
+            for evt in recent_events:
+                if getattr(evt, 'prompt_source', None) == 'custom':
+                    most_recent_custom = getattr(evt, 'prompt', None)
+                    break
+
+            tab_system, tab_active, tab_recent = st.tabs([
+                "Prompt",
+                "Active Prompt",
+                "Most Recent Custom",
+            ])
+
+            with tab_system:
+                st.text_area(
+                    "Prompt (read-only)",
+                    value=DEFAULT_PROMPTS.get(prompt_key, ""),
+                    height=400,
+                    disabled=True,
+                    key=f"system_prompt_view_{prompt_key}",
+                )
+
+            with tab_active:
+                editor_key = f"prompt_editor_{prompt_key}"
+                pending_editor_key = f"pending_{editor_key}"
+                if pending_editor_key in st.session_state:
+                    st.session_state[editor_key] = st.session_state.pop(pending_editor_key)
+
+                edited_prompt = st.text_area(
+                    "Edit Custom Prompt:",
+                    value=st.session_state.custom_prompts.get(prompt_key, DEFAULT_PROMPTS.get(prompt_key, "")),
+                    height=400,
+                    key=editor_key,
+                )
+
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    if st.button("💾 Save Custom Prompt", key=f"save_custom_{prompt_key}"):
+                        st.session_state.custom_prompts[prompt_key] = edited_prompt
+                        st.session_state[pending_editor_key] = edited_prompt
+                        _save_prompt_event(prompt_key, 'custom', 'edited', edited_prompt)
+                        _save_prompt_preference(prompt_key, 'custom', edited_prompt)
+                        st.session_state.prompt_source_preference[prompt_key] = 'custom'
+                        st.rerun()
+                with col_b:
+                    if st.button("🔄 Reset to Default", key=f"reset_{prompt_key}"):
+                        st.session_state.custom_prompts[prompt_key] = DEFAULT_PROMPTS[prompt_key]
+                        st.session_state[pending_editor_key] = DEFAULT_PROMPTS[prompt_key]
+                        _save_prompt_event(prompt_key, 'custom', 'edited', DEFAULT_PROMPTS[prompt_key])
+                        _save_prompt_preference(prompt_key, 'custom', DEFAULT_PROMPTS[prompt_key])
+                        st.session_state.prompt_source_preference[prompt_key] = 'custom'
+                        st.rerun()
+                with col_c:
+                    st.download_button(
+                        "📥 Download",
+                        data=edited_prompt,
+                        file_name=f"{prompt_key}_prompt.txt",
+                        mime="text/plain",
+                        key=f"download_{prompt_key}",
+                    )
+
+                st.markdown("#### Last 5 prompts (edited/used)")
+                last5 = _get_recent_prompt_events(prompt_key, limit=5)
+                if not last5:
+                    st.caption("No prompt history yet.")
+                else:
+                    for evt in last5:
+                        evt_source = getattr(evt, 'prompt_source', '')
+                        evt_type = getattr(evt, 'event_type', '')
+                        evt_prompt = getattr(evt, 'prompt', '')
+                        evt_time = getattr(evt, 'created_at', None)
+                        label = f"{evt_type} / {evt_source}"
+                        if evt_time:
+                            label = f"{label} @ {evt_time}"
+
+                        with st.expander(label, expanded=False):
+                            st.text_area(
+                                "Prompt",
+                                value=evt_prompt,
+                                height=220,
+                                disabled=True,
+                                key=f"hist_prompt_{prompt_key}_{getattr(evt, 'id', label)}",
+                            )
+                            col_u, col_g = st.columns(2)
+                            with col_u:
+                                if st.button("Use this prompt next", key=f"reuse_{prompt_key}_{getattr(evt, 'id', label)}"):
+                                    st.session_state.custom_prompts[prompt_key] = evt_prompt
+                                    st.session_state[pending_editor_key] = evt_prompt
+                                    st.session_state.prompt_source_preference[prompt_key] = 'custom'
+                                    _save_prompt_preference(prompt_key, 'custom', evt_prompt)
+                                    st.rerun()
+                            with col_g:
+                                if st.button("Generate report using this prompt", key=f"gen_{prompt_key}_{getattr(evt, 'id', label)}"):
+                                    st.session_state.custom_prompts[prompt_key] = evt_prompt
+                                    st.session_state[pending_editor_key] = evt_prompt
+                                    st.session_state.prompt_source_preference[prompt_key] = 'custom'
+                                    _save_prompt_preference(prompt_key, 'custom', evt_prompt)
+                                    st.session_state.auto_run_agent = prompt_key
+                                    st.session_state.auto_run_prompt = evt_prompt
+                                    st.rerun()
+
+            with tab_recent:
+                st.text_area(
+                    "Most recent custom prompt (read-only)",
+                    value=most_recent_custom or "No custom prompt found yet.",
+                    height=400,
+                    disabled=True,
+                    key=f"most_recent_custom_{prompt_key}",
                 )
     
     with col2:
         st.markdown("### 🎯 Output")
         
         # Run button
-        if st.button(f"▶️ Run {selected['name']} Agent", type="primary", use_container_width=True):
+        auto_run = (
+            st.session_state.get('auto_run_agent') == st.session_state.selected_agent
+            and st.session_state.get('auto_run_prompt')
+        )
+
+        run_clicked = st.button(f"▶️ Run {selected['name']} Agent", type="primary", use_container_width=True)
+        if auto_run or run_clicked:
             with st.spinner(f"Running {selected['name']} agent..."):
                 try:
-                    farmer_input = FarmerInput(
-                        location=st.session_state.get("location_name") or location_name,
-                        crop_name=crop_name,
-                        crop_variety=crop_variety,
-                        sowing_date=sowing_date.strftime("%Y-%m-%d"),
-                        area=area,
-                        previous_crop_sowed=previous_crop_sowed,
-                        irrigation_type=st.session_state.get('irrigation_type', 'rainfed'),
-                        irrigation_method=st.session_state.get('irrigation_method', None),
-                        water_source=st.session_state.get('water_source', None),
-                        farming_method=st.session_state.get('farming_method', None),
-                        planting_method=st.session_state.get('planting_method', None),
-                        last_fertilizers_used=st.session_state.get('last_fertilizers_used', None),
-                        last_fertilizer_date=st.session_state.get('last_fertilizer_date', None),
-                        soil_type=None,
-                    )
-                    
+                    from user_input import get_farmer_input_from_session
+                    farmer_input = get_farmer_input_from_session(st.session_state)
+
+                    from backend.init_db import SessionLocal
+                    from backend.data_store import create_agent_run
+                    with SessionLocal() as session:
+                        run = create_agent_run(
+                            session,
+                            triggered_agent_id=st.session_state.selected_agent,
+                            location=getattr(farmer_input, 'location', None),
+                            crop_name=getattr(farmer_input, 'crop_name', None),
+                            crop_variety=getattr(farmer_input, 'crop_variety', None),
+                            sowing_date=getattr(farmer_input, 'sowing_date', None),
+                            model_name=st.session_state.selected_model,
+                        )
+                        run_id = run.id
+                    st.session_state.last_run_id = run_id
+
                     agent_id = st.session_state.selected_agent
-                    
+
+                    prompt_source = st.session_state.prompt_source_preference.get(agent_id, 'custom')
+                    if auto_run:
+                        prompt_source = 'custom'
+                        prompt_to_use = st.session_state.get('auto_run_prompt')
+                    elif prompt_source == 'system':
+                        prompt_to_use = DEFAULT_PROMPTS.get(agent_id, "")
+                    else:
+                        prompt_to_use = st.session_state.custom_prompts.get(agent_id, DEFAULT_PROMPTS.get(agent_id, ""))
+
+                    # Clear auto-run flags early to prevent repeat execution on rerun
+                    if auto_run:
+                        st.session_state.auto_run_agent = None
+                        st.session_state.auto_run_prompt = None
+
+                    if agent_id != 'weather' and prompt_to_use:
+                        _save_prompt_event(agent_id, prompt_source, 'used', prompt_to_use)
+
                     if agent_id == 'soil':
                         output = run_soil_agent(
                             location=farmer_input.location,
@@ -741,43 +1288,21 @@ if st.session_state.selected_agent:
                             latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
                             longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
                             soil_type="",
-                            custom_prompt=st.session_state.custom_prompts['soil'],
+                            custom_prompt=prompt_to_use,
                             model=st.session_state.selected_model,
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
+                            run_id=run_id,
                         )
-                        
-                        from backend.init_db import SessionLocal
-                        from backend.data_store import save_soil
-                        with SessionLocal() as session:
-                            save_soil(
-                                session,
-                                location=farmer_input.location,
-                                crop_name=farmer_input.crop_name,
-                                model_name=st.session_state.selected_model,
-                                prompt=st.session_state.custom_prompts['soil'],
-                                output=output
-                            )
                     elif agent_id == 'water':
                         output = water_agent(
                             farmer_input,
-                            custom_prompt=st.session_state.custom_prompts['water'],
+                            custom_prompt=prompt_to_use,
                             model=st.session_state.selected_model,
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
+                            run_id=run_id,
                         )
-                        
-                        from backend.init_db import SessionLocal
-                        from backend.data_store import save_water
-                        with SessionLocal() as session:
-                            save_water(
-                                session,
-                                location=farmer_input.location,
-                                crop_name=farmer_input.crop_name,
-                                model_name=st.session_state.selected_model,
-                                prompt=st.session_state.custom_prompts['water'],
-                                output=output
-                            )
                     elif agent_id == 'weather':
                         output = weather_7day_compact(
                             location=location_name,
@@ -785,19 +1310,10 @@ if st.session_state.selected_agent:
                             longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
                             days=7,
                             save_to_db=True,
-                            model_name=st.session_state.selected_model
+                            model_name=st.session_state.selected_model,
+                            crop_name=farmer_input.crop_name,
+                            run_id=run_id,
                         )
-                        # from backend.init_db import SessionLocal
-                        # from backend.data_store import save_weather
-                        # import json
-                        # with SessionLocal() as session:
-                        #     output_to_save = json.dumps(output, ensure_ascii=False) if isinstance(output, dict) else output
-                        #     save_weather(
-                        #         session,
-                        #         location=farmer_input.location,
-                        #         crop_name=farmer_input.crop_name,
-                        #         prompt="Weather agent uses API - no custom prompt available",
-                        #         output=output_to_save
                         #     )
                     elif agent_id == 'stage':
                         output = stage_generation(
@@ -806,53 +1322,55 @@ if st.session_state.selected_agent:
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
                             latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
-                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None
+                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
+                            session_state=st.session_state,
+                            run_id=run_id,
                         )
                     elif agent_id == 'nutrient':
                         output = nutrient_agent(
                             farmer_input,
-                            custom_prompt=st.session_state.custom_prompts['nutrient'],
-                            # soil_text=soil_text,
-                            # water_text=water_text,
-                            # weather_text=weather_text,
-                            # stages_text=stage_output,
-                            model=st.session_state.selected_model,
-                            temperature=st.session_state.temperature,
-                            max_tokens=st.session_state.max_tokens,
-                            session_state=st.session_state,  # PASS SESSION STATE
-                            latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
-                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None
-                        )
-                    elif agent_id == 'pest':
-                        output = pest_agent(
-                            farmer_input,
-                            custom_prompt=st.session_state.custom_prompts['pest'],
+                            custom_prompt=prompt_to_use,
                             model=st.session_state.selected_model,
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
                             session_state=st.session_state,
                             latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
-                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None
+                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
+                            run_id=run_id,
+                        )
+                    elif agent_id == 'pest':
+                        output = pest_agent(
+                            farmer_input,
+                            custom_prompt=prompt_to_use,
+                            model=st.session_state.selected_model,
+                            temperature=st.session_state.temperature,
+                            max_tokens=st.session_state.max_tokens,
+                            session_state=st.session_state,
+                            latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
+                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
+                            run_id=run_id,
                         )
                     elif agent_id == 'disease':
                         output = disease_agent(
                             farmer_input,
-                            custom_prompt=st.session_state.custom_prompts['disease'],
+                            custom_prompt=prompt_to_use,
                             model=st.session_state.selected_model,
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
                             latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
-                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None
+                            longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
+                            run_id=run_id,
                         )
                     elif agent_id == 'irrigation':
                         output = irrigation_agent(
                             farmer_input,
-                            custom_prompt=st.session_state.custom_prompts['irrigation'],
+                            custom_prompt=prompt_to_use,
                             model_name=st.session_state.selected_model,
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
                             latitude=st.session_state.location_coords[0] if st.session_state.location_coords else None,
                             longitude=st.session_state.location_coords[1] if st.session_state.location_coords else None,
+                            run_id=run_id,
                         )
                     elif agent_id == 'merge':
                         output = merge_agent(
@@ -863,11 +1381,38 @@ if st.session_state.selected_agent:
                             disease=st.session_state.agent_outputs.get('disease'),
                             weather=st.session_state.agent_outputs.get('weather'),
                             stage=st.session_state.agent_outputs.get('stage'),
-                            custom_prompt=st.session_state.custom_prompts['merge'],
+                            custom_prompt=prompt_to_use,
                             model_name=st.session_state.selected_model,
                             temperature=st.session_state.temperature,
                             max_tokens=st.session_state.max_tokens,
                         )
+
+                        try:
+                            from backend.init_db import SessionLocal
+                            from backend.data_store import save_merge
+
+                            def _txt(v):
+                                if isinstance(v, dict) and 'output' in v:
+                                    return v.get('output')
+                                return v
+
+                            with SessionLocal() as session:
+                                save_merge(
+                                    session,
+                                    soil=_txt(st.session_state.agent_outputs.get('soil')),
+                                    nutrient=_txt(st.session_state.agent_outputs.get('nutrient')),
+                                    irrigation=_txt(st.session_state.agent_outputs.get('irrigation')),
+                                    pest=_txt(st.session_state.agent_outputs.get('pest')),
+                                    disease=_txt(st.session_state.agent_outputs.get('disease')),
+                                    weather=_txt(st.session_state.agent_outputs.get('weather')),
+                                    stage=_txt(st.session_state.agent_outputs.get('stage')),
+                                    model_name=st.session_state.selected_model,
+                                    prompt=prompt_to_use,
+                                    output=output,
+                                    run_id=run_id,
+                                )
+                        except Exception:
+                            pass
                     
                     st.session_state.agent_outputs[agent_id] = output
                     st.success("✅ Agent completed successfully!")

@@ -8,6 +8,7 @@ from together import Together
 from dataclasses import dataclass
 from openai import OpenAI
 from langgraph.graph import StateGraph
+from llm_router import call_llm
 
 load_dotenv()
 
@@ -88,15 +89,14 @@ water_system_prompt = """
     (Based on regional data availability)
 
     RULES:
-    ✅ Use regional groundwater/surface water data for that district
-    ✅ If specific data unavailable → use state/zone averages
-    ✅ Keep language simple and direct (avoid "may", "often", "commonly")
-    ✅ If a parameter truly unknown → write "Data not available for this region"
-    ✅ Mark output as: [Estimated from regional data] or [From water test report]
-    ❌ NO soil information
-    ❌ NO irrigation schedules (that's for irrigation agent)
-    ❌ NO fertilizer advice
-    ❌ Keep output under 15 lines
+    Use regional groundwater/surface water data for that district
+    If specific data unavailable → use state/zone averages
+    Keep language simple and direct (avoid "may", "often", "commonly")
+    If a parameter truly unknown → write "Data not available for this region"
+    Mark output as: [Estimated from regional data] or [From water test report]
+    NO soil information
+    NO irrigation schedules (that's for irrigation agent)
+    NO fertilizer advice
 
     This data feeds into irrigation and crop planning agents.
     """
@@ -107,17 +107,26 @@ def water_agent(farmer: FarmerInput,
     model: str = None,  
     temperature: float = 0.1, 
     max_tokens: int = 1200, 
-    save_to_db: bool = True) -> dict:  # returns {'output': ..., 'id': ...}
+    save_to_db: bool = True,
+    run_id: int = None) -> dict:  # returns {'output': ..., 'id': ...}
     """
     Water Agent that uses FarmerInput dataclass.
     """
     location = farmer.location
     crop = farmer.crop_name
-    water_source = farmer.irrigation_type if farmer.irrigation_type else ""
+    water_source = farmer.water_source if farmer.water_source else ""
+    irrigation_type = farmer.irrigation_type if farmer.irrigation_type else ""
+    irrigation_method = farmer.irrigation_method if farmer.irrigation_method else ""
+    irrigation_water_quality = farmer.irrigation_water_quality if getattr(farmer, 'irrigation_water_quality', None) else ""
+    water_reliability = farmer.water_reliability if getattr(farmer, 'water_reliability', None) else ""
     user_msg = f"""
     location: {location}
     crop: {crop}
     water_source: {water_source}
+    irrigation_type: {irrigation_type}
+    irrigation_method: {irrigation_method}
+    irrigation_water_quality: {irrigation_water_quality}
+    water_reliability: {water_reliability}
 
     Please respond only with the plain-text water-quality summary following the system prompt format.
     """
@@ -125,43 +134,23 @@ def water_agent(farmer: FarmerInput,
     system_prompt = custom_prompt if custom_prompt else water_system_prompt
     chosen_model = model if model else MODEL_NAME
 
-    if chosen_model == "gpt-4.1":
-        import openai
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return "Error: OPENAI_API_KEY not set in environment."
-        openai_client = OpenAI(api_key=api_key)
-        try:
-            resp = openai_client.chat.completions.create(
-                model=chosen_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            text = resp.choices[0].message.content.strip()
-        except Exception as e:
-            return f"Error calling OpenAI GPT-4.1: {e}"
-    else:
-        # Use Together API
-        resp = client.chat.completions.create(
+    try:
+        text = call_llm(
             model=chosen_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=max_tokens,  # Increased for full report
+            system_prompt=system_prompt,
+            user_message=user_msg,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
-        text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error calling model {chosen_model}: {e}"
+
     if save_to_db:
         try:
             from backend.init_db import SessionLocal
             from backend.data_store import save_water
             with SessionLocal() as session:
-                obj = save_water(session, location, crop, chosen_model, system_prompt, text)
+                obj = save_water(session, location, crop, chosen_model, system_prompt, text, run_id=run_id)
                 return {'output': text, 'id': obj.id}
         except Exception as ex:
             print(f'[water_agent] Warning: Could not save to DB: {ex}')

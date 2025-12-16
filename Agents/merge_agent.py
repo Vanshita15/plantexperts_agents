@@ -168,11 +168,10 @@
 import os
 import json
 import re
-from together import Together
+from llm_router import call_llm
 from dotenv import load_dotenv
 
 load_dotenv()
-client = Together()
 MODEL_NAME = "Qwen/Qwen2.5-72B-Instruct-Turbo"
 
 # ✅ COMPLETE MERGE PROMPT - Production Ready
@@ -471,31 +470,29 @@ Now generate the merged JSON report following the structure specified in the sys
     
     try:
         # Call LLM
-        resp = client.chat.completions.create(
+        response = call_llm(
             model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            user_message=user_message,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
-        
-        content = resp.choices[0].message.content.strip()
-        
-        # Clean JSON response
-        cleaned_content = clean_json_response(content)
-        
-        # ✅ TRY TO PARSE JSON - If successful, return pretty JSON string
-        try:
-            parsed_json = json.loads(cleaned_content)
-            # Return formatted JSON string (pretty printed)
-            return json.dumps(parsed_json, indent=2, ensure_ascii=False)
-        
-        except json.JSONDecodeError:
-            # ✅ IF JSON PARSING FAILS - Return cleaned text as-is
-            # This handles cases where LLM returns text instead of JSON
-            return cleaned_content
+    except Exception as e:
+        return f"Error calling merge model: {e}"
+    
+    # Clean JSON response
+    cleaned_content = clean_json_response(response)
+    
+    # ✅ TRY TO PARSE JSON - If successful, return pretty JSON string
+    try:
+        parsed_json = json.loads(cleaned_content)
+        # Return formatted JSON string (pretty printed)
+        return json.dumps(parsed_json, indent=2, ensure_ascii=False)
+    
+    except json.JSONDecodeError:
+        # ✅ IF JSON PARSING FAILS - Return cleaned text as-is
+        # This handles cases where LLM returns text instead of JSON
+        return cleaned_content
     
     except Exception as e:
         # ✅ RETURN ERROR AS STRING (not dict)

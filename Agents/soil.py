@@ -8,6 +8,7 @@ from together import Together
 from dataclasses import dataclass
 from langgraph.graph import StateGraph
 from openai import OpenAI
+from llm_router import call_llm
 
 load_dotenv()
 
@@ -93,11 +94,23 @@ def run_soil_agent(
     latitude: float = None,
     longitude: float = None,
     soil_type: str = "",
+    soil_texture: str = None,
+    drainage: str = None,
+    waterlogging: str = None,
+    salinity_signs: str = None,
+    field_slope: str = None,
+    hardpan_crusting: str = None,
+    farming_method: str = None,
+    planting_method: str = None,
+    irrigation_type: str = None,
+    irrigation_method: str = None,
+    water_source: str = None,
     custom_prompt: str = None,
     model: str = None,
     temperature: float = 0.1,
     max_tokens: int = 1200,
-    save_to_db: bool = True
+    save_to_db: bool = True,
+    run_id: int = None
     ) -> dict:  # returns {'output': ..., 'id': ...}
 
     """
@@ -131,42 +144,36 @@ def run_soil_agent(
 
     SOIL INFORMATION:
     - Soil Type (if known): {soil_type if soil_type else "Unknown - please estimate"}
+
+    FIELD OBSERVATIONS (from farmer):
+    - Soil texture (observation): {soil_texture or ""}
+    - Drainage: {drainage or ""}
+    - Waterlogging: {waterlogging or ""}
+    - Salinity signs: {salinity_signs or ""}
+    - Field slope: {field_slope or ""}
+    - Hardpan / crusting: {hardpan_crusting or ""}
+
+    FARM PRACTICES (from farmer):
+    - Farming method: {farming_method or ""}
+    - Planting method: {planting_method or ""}
+    - Irrigation type: {irrigation_type or ""}
+    - Irrigation method: {irrigation_method or ""}
+    - Water source: {water_source or ""}
     """
     
     system_prompt = custom_prompt if custom_prompt else SOIL_SYSTEM_PROMPT
     chosen_model = model if model else llama_model_name
 
-    if chosen_model == "gpt-4.1":
-        import openai
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return "Error: OPENAI_API_KEY not set in environment."
-        openai_client = OpenAI(api_key=api_key)
-        try:
-            resp = openai_client.chat.completions.create(
-                model=chosen_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            text = resp.choices[0].message.content.strip()
-        except Exception as e:
-            return f"Error calling OpenAI GPT-4.1: {e}"
-    else:
-        # Use Together API  
-        resp = client.chat.completions.create(
+    try:
+        text = call_llm(
             model=chosen_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=max_tokens,  # Increased for full report
+            system_prompt=system_prompt,
+            user_message=user_msg,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
-        text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error calling model {chosen_model}: {e}"
     if save_to_db:
         print(" ----------------soil agent")
         try:
@@ -178,7 +185,7 @@ def run_soil_agent(
                     import json
                     output_str = json.dumps(output_str, ensure_ascii=False)
                 print('[DEBUG][run_soil_agent] output_str type:', type(output_str))
-                obj = save_soil(session, location, crop_name, chosen_model, system_prompt, output_str)
+                obj = save_soil(session, location, crop_name, chosen_model, system_prompt, output_str, run_id=run_id)
                 print("TYPE of obj:", type(obj))
                 print("obj.id =", obj.id)
                 print("-----------------------object>",obj)

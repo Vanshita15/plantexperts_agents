@@ -11,3 +11,6 @@ request
 streamlit
 streamlit-folium
 psycopg2
+anthropic
+google-generativeai
+

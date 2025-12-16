@@ -4,6 +4,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from together import Together
 from user_input import FarmerInput
+from llm_router import call_llm
 
 load_dotenv()
 
@@ -19,6 +20,20 @@ irrigation_system_prompt = """
     - Crop: {crop}
     - Sowing Date: {sowing_date}
     - Area: {area} hectares
+    - Farmer Inputs:
+      - Irrigation Type: {irrigation_type}
+      - Irrigation Method: {irrigation_method}
+      - Water Source: {water_source}
+      - Water Reliability: {water_reliability}
+      - Irrigation Water Quality: {irrigation_water_quality}
+      - Soil Texture (observation): {soil_texture}
+      - Drainage: {drainage}
+      - Waterlogging: {waterlogging}
+      - Salinity Signs: {salinity_signs}
+      - Field Slope: {field_slope}
+      - Hardpan / Crusting: {hardpan_crusting}
+      - Farming Method: {farming_method}
+      - Planting Method: {planting_method}
     - Soil Report: {soil_report}
     - Water Report: {water_report}
     - Weather Report: {weather_report}
@@ -62,6 +77,8 @@ irrigation_system_prompt = """
     - Rainfed: Plan for supplementary irrigation during dry spells
     - Drip: Reduce water quantity by 30-40%, increase frequency
     - Sprinkler: Reduce quantity by 20-30%
+
+    If farmer-provided inputs conflict with generic assumptions, prefer the farmer inputs.
 
     5. CROP-SPECIFIC GUIDELINES:
     - For cereals (wheat/rice/maize): Focus on tillering, flowering, grain filling
@@ -171,6 +188,7 @@ def irrigation_agent(
     latitude: float = None,
     longitude: float = None,
     save_to_db: bool = True,
+    run_id: int = None,
 ) -> str:
     """
     Generate detailed stage-wise irrigation plan for any crop.
@@ -227,16 +245,16 @@ def irrigation_agent(
     stage_data = None
 
     if soil_report is None:
-        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, chosen_model, latitude, longitude)
+        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, chosen_model, latitude, longitude, run_id=run_id)
         soil_report = extract_output_text(soil_data)
     if water_report is None:
-        water_data = get_or_fetch_water(farmer_input, session_state or {}, chosen_model)
+        water_data = get_or_fetch_water(farmer_input, session_state or {}, chosen_model, run_id=run_id)
         water_report = extract_output_text(water_data)
     if weather_report is None:
-        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, model_name=chosen_model)
+        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, model_name=chosen_model, run_id=run_id)
         weather_report = extract_output_text(weather_data)
     if growth_stages is None:
-        stage_data = get_or_fetch_stage(farmer_input, session_state or {}, chosen_model, latitude, longitude)
+        stage_data = get_or_fetch_stage(farmer_input, session_state or {}, chosen_model, latitude, longitude, run_id=run_id)
         growth_stages = extract_output_text(stage_data)
 
     # Format prompt with actual data
@@ -245,6 +263,19 @@ def irrigation_agent(
         crop=esc(crop),
         sowing_date=esc(sowing_date),
         area=esc(str(area)),
+        irrigation_type=esc(getattr(farmer_input, 'irrigation_type', '') or ''),
+        irrigation_method=esc(getattr(farmer_input, 'irrigation_method', '') or ''),
+        water_source=esc(getattr(farmer_input, 'water_source', '') or ''),
+        water_reliability=esc(getattr(farmer_input, 'water_reliability', '') or ''),
+        irrigation_water_quality=esc(getattr(farmer_input, 'irrigation_water_quality', '') or ''),
+        soil_texture=esc(getattr(farmer_input, 'soil_texture', '') or ''),
+        drainage=esc(getattr(farmer_input, 'drainage', '') or ''),
+        waterlogging=esc(getattr(farmer_input, 'waterlogging', '') or ''),
+        salinity_signs=esc(getattr(farmer_input, 'salinity_signs', '') or ''),
+        field_slope=esc(getattr(farmer_input, 'field_slope', '') or ''),
+        hardpan_crusting=esc(getattr(farmer_input, 'hardpan_crusting', '') or ''),
+        farming_method=esc(getattr(farmer_input, 'farming_method', '') or ''),
+        planting_method=esc(getattr(farmer_input, 'planting_method', '') or ''),
         soil_report=esc(soil_report),
         water_report=esc(water_report),
         weather_report=esc(weather_report),
@@ -252,15 +283,13 @@ def irrigation_agent(
     )
 
     try:
-        resp = client.chat.completions.create(
+        text = call_llm(
             model=chosen_model,
-            messages=[
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            user_message=user_message,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
-        final_text = resp.choices[0].message.content.strip()
 
         if save_to_db:
             try:
@@ -294,6 +323,7 @@ def irrigation_agent(
                         model_name=chosen_model,
                         prompt=system_prompt,
                         output=final_text,
+                        run_id=run_id,
                     )
                     return {"id": obj.id, "output": final_text}
             except Exception as ex:

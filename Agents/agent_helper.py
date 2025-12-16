@@ -7,7 +7,7 @@ from backend.init_db import SessionLocal
 from backend.data_store import get_latest_soil, get_latest_water, get_latest_weather, get_latest_stage
 from datetime import datetime, timedelta
 
-def get_or_fetch_soil(farmer_input, session_state, model, latitude=None, longitude=None):
+def get_or_fetch_soil(farmer_input, session_state, model, latitude=None, longitude=None, run_id: int = None):
     """
     Get soil data from session state, database, or generate new.
     Returns dict with 'id' and 'output' keys.
@@ -44,7 +44,8 @@ def get_or_fetch_soil(farmer_input, session_state, model, latitude=None, longitu
         latitude=latitude,
         longitude=longitude,
         soil_type=farmer_input.soil_type or "",
-        model=model
+        model=model,
+        run_id=run_id,
     )
     
     # Save to session state
@@ -55,7 +56,7 @@ def get_or_fetch_soil(farmer_input, session_state, model, latitude=None, longitu
     return result
 
 
-def get_or_fetch_water(farmer_input, session_state, model):
+def get_or_fetch_water(farmer_input, session_state, model, run_id: int = None):
     """
     Get water data from session state, database, or generate new.
     Returns dict with 'id' and 'output' keys.
@@ -82,7 +83,7 @@ def get_or_fetch_water(farmer_input, session_state, model):
     
     # 3. Generate new
     from water import water_agent
-    result = water_agent(farmer_input, model=model)
+    result = water_agent(farmer_input, model=model, run_id=run_id)
     
     # Save to session state
     if 'agent_outputs' not in session_state:
@@ -92,7 +93,7 @@ def get_or_fetch_water(farmer_input, session_state, model):
     return result
 
 
-def get_or_fetch_weather(farmer_input, session_state, latitude=None, longitude=None, model_name: str = ""):
+def get_or_fetch_weather(farmer_input, session_state, latitude=None, longitude=None, model_name: str = "", run_id: int = None):
     """
     Get weather data from session state, database, or generate new.
     Returns dict with 'id' and 'output' keys.
@@ -126,7 +127,8 @@ def get_or_fetch_weather(farmer_input, session_state, latitude=None, longitude=N
         days=7,
         crop_name=farmer_input.crop_name,
         save_to_db=True,
-        model_name=model_name
+        model_name=model_name,
+        run_id=run_id,
     )
     
     # Save to session state
@@ -137,7 +139,7 @@ def get_or_fetch_weather(farmer_input, session_state, latitude=None, longitude=N
     return result
 
 
-def get_or_fetch_stage(farmer_input, session_state, model, latitude=None, longitude=None, soil_data=None, water_data=None, weather_data=None):
+def get_or_fetch_stage(farmer_input, session_state, model, latitude=None, longitude=None, soil_data=None, water_data=None, weather_data=None, run_id: int = None):
     """
     Get stage data from session state, database, or generate new.
     Returns dict with 'id' and 'output' keys.
@@ -172,11 +174,11 @@ def get_or_fetch_stage(farmer_input, session_state, model, latitude=None, longit
     
     # Ensure dependencies are fetched
     if soil_data is None:
-        soil_data = get_or_fetch_soil(farmer_input, session_state, model, latitude, longitude)
+        soil_data = get_or_fetch_soil(farmer_input, session_state, model, latitude, longitude, run_id=run_id)
     if water_data is None:
-        water_data = get_or_fetch_water(farmer_input, session_state, model)
+        water_data = get_or_fetch_water(farmer_input, session_state, model, run_id=run_id)
     if weather_data is None:
-        weather_data = get_or_fetch_weather(farmer_input, session_state, latitude, longitude, model_name=model)
+        weather_data = get_or_fetch_weather(farmer_input, session_state, latitude, longitude, model_name=model, run_id=run_id)
     
     result = stage_generation(
         farmer_input,
@@ -185,7 +187,8 @@ def get_or_fetch_stage(farmer_input, session_state, model, latitude=None, longit
         longitude=longitude,
         soil_data=soil_data,
         water_data=water_data,
-        weather_data=weather_data
+        weather_data=weather_data,
+        run_id=run_id,
     )
     
     # Save to session state

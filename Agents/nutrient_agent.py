@@ -6,6 +6,7 @@ from soil import FarmerInput
 from soil import run_soil_agent
 from water import water_agent
 from weather import weather_7day_compact
+from llm_router import call_llm
 
 load_dotenv()
 
@@ -87,6 +88,7 @@ def nutrient_agent(
     latitude: float = None,
     longitude: float = None,
     save_to_db: bool = True,
+    run_id: int = None,
 ) -> Any:
     """
     Generate stage-wise nutrient management plan.
@@ -102,17 +104,17 @@ def nutrient_agent(
     
     # Fetch dependencies intelligently (checks session/DB first)
     if soil_text is None:
-        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, model, latitude, longitude)
+        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, model, latitude, longitude, run_id=run_id)
         print("------------------------------get_or_fetch_soil",soil_data)
         soil_text = extract_output_text(soil_data)
     
     if water_text is None:
-        water_data = get_or_fetch_water(farmer_input, session_state or {}, model)
+        water_data = get_or_fetch_water(farmer_input, session_state or {}, model, run_id=run_id)
         print("------------------------------get_or_fetch_water",water_data)
         water_text = extract_output_text(water_data)
     
     if weather_text is None:
-        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude)
+        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, run_id=run_id)
         print("------------------------------get_or_fetch_weather",weather_data)
         weather_text = extract_output_text(weather_data)
     
@@ -123,9 +125,10 @@ def nutrient_agent(
             model, 
             latitude, 
             longitude,
-            soil_data if 'soil_data' in locals() else None,
-            water_data if 'water_data' in locals() else None,
-            weather_data if 'weather_data' in locals() else None
+            soil_data=soil_data,
+            water_data=water_data,
+            weather_data=weather_data,
+            run_id=run_id,
         )
         print("------------------------------get_or_fetch_stage",stages_text)
 
@@ -140,6 +143,16 @@ def nutrient_agent(
     Variety: {farmer_input.crop_variety}
     Location: {farmer_input.location}
     Area: {farmer_input.area} hectares
+
+    FARMER CONTEXT:
+    Previous crop: {getattr(farmer_input, 'previous_crop_sowed', None)}
+    Farming method: {getattr(farmer_input, 'farming_method', None)}
+    Planting method: {getattr(farmer_input, 'planting_method', None)}
+    Irrigation type: {getattr(farmer_input, 'irrigation_type', None)}
+    Irrigation method: {getattr(farmer_input, 'irrigation_method', None)}
+    Water source: {getattr(farmer_input, 'water_source', None)}
+    Last fertilizers used: {getattr(farmer_input, 'last_fertilizers_used', None)}
+    Last fertilizer date: {getattr(farmer_input, 'last_fertilizer_date', None)}
 
     GROWTH STAGES (from Stage Agent):
     {stages_text}
@@ -166,35 +179,13 @@ def nutrient_agent(
     
     chosen_model = model if model else MODEL_NAME
     try:
-        if chosen_model == "gpt-4.1":
-            from openai import OpenAI
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                return "Error: OPENAI_API_KEY not set in environment."
-            openai_client = OpenAI(api_key=api_key)
-            resp = openai_client.chat.completions.create(
-                model=chosen_model,
-                messages=[
-                    {"role": "system", "content": "You are an expert agricultural nutrient management specialist."},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            text_out = resp.choices[0].message.content.strip()
-        else:
-            from together import Together
-            client = Together()
-            resp = client.chat.completions.create(
-                model=chosen_model,
-                messages=[
-                    {"role": "system", "content": "You are an expert agricultural nutrient management specialist."},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            text_out = resp.choices[0].message.content.strip()
+        text_out = call_llm(
+            model=chosen_model,
+            system_prompt="You are an expert agricultural nutrient management specialist.",
+            user_message=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
         if save_to_db:
             try:
@@ -217,6 +208,7 @@ def nutrient_agent(
                         model_name=chosen_model,
                         prompt=system_prompt,
                         output=text_out,
+                        run_id=run_id,
                     )
                     return {'id': obj.id, 'output': text_out}
             except Exception as ex:

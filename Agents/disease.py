@@ -10,6 +10,7 @@ from soil import FarmerInput, run_soil_agent
 from stage_agent import stage_generation
 import re
 from weather import weather_7day_compact
+from llm_router import call_llm
 
 
 load_dotenv()
@@ -123,7 +124,8 @@ def disease_agent(
     longitude: float = None,
     soil_text: str = None,
     weather_text: str = None,
-    stages_text: str = None
+    stages_text: str = None,
+    run_id: int = None
 ) -> str:
     """
     Generate stage-specific disease risk assessment.
@@ -153,13 +155,13 @@ def disease_agent(
     weather_data = None
     stage_data = None
     if soil_text is None:
-        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, model, latitude, longitude)
+        soil_data = get_or_fetch_soil(farmer_input, session_state or {}, model, latitude, longitude, run_id=run_id)
         soil_text = extract_output_text(soil_data)
     if weather_text is None:
-        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, model_name=model or MODEL_NAME)
+        weather_data = get_or_fetch_weather(farmer_input, session_state or {}, latitude, longitude, model_name=model or MODEL_NAME, run_id=run_id)
         weather_text = extract_output_text(weather_data)
     if stages_text is None:
-        stage_data = get_or_fetch_stage(farmer_input, session_state or {}, model, latitude, longitude)
+        stage_data = get_or_fetch_stage(farmer_input, session_state or {}, model, latitude, longitude, run_id=run_id)
         stages_text = extract_output_text(stage_data)
 
     stage_report = stages_text
@@ -204,36 +206,14 @@ def disease_agent(
         """
         chosen_model = model if model else MODEL_NAME
         try:
-            if chosen_model == "gpt-4.1":
-                from openai import OpenAI
-                api_key = os.getenv("OPENAI_API_KEY")
-                if not api_key:
-                    results.append(f"Error: OPENAI_API_KEY not set in environment.")
-                    continue
-                openai_client = OpenAI(api_key=api_key)
-                resp = openai_client.chat.completions.create(
-                    model=chosen_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                results.append(f"--- Disease Risk for {stage_name} ({stage_start} to {stage_end}) ---\n" + resp.choices[0].message.content.strip())
-            else:
-                from together import Together
-                client = Together()
-                resp = client.chat.completions.create(
-                    model=chosen_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                results.append(f"--- Disease Risk for {stage_name} ({stage_start} to {stage_end}) ---\n" + resp.choices[0].message.content.strip())
+            text = call_llm(
+                model=chosen_model,
+                system_prompt=system_prompt,
+                user_message=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            results.append(f"--- Disease Risk for {stage_name} ({stage_start} to {stage_end}) ---\n" + text)
         except Exception as e:
             results.append(f"Error generating disease assessment for stage {stage_name}: {e}")
     if not results:
@@ -263,6 +243,7 @@ def disease_agent(
                 model_name=chosen_model,
                 prompt=system_prompt,
                 output=final_text,
+                run_id=run_id,
             )
             return {"id": obj.id, "output": final_text}
     except Exception as ex:
