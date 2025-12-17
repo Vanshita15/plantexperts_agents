@@ -1,7 +1,7 @@
 import os
 from typing import Optional
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(), override=True)
 
 def call_llm(
     *,
@@ -28,8 +28,10 @@ def call_llm(
     # OpenAI
     if m.startswith("gpt-"):
         api_key = os.getenv("OPENAI_API_KEY")
+        print("---------------------------------------->",api_key)
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set in environment")
+        api_key = api_key.strip().strip('"').strip("'")
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)

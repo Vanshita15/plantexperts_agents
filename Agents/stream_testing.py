@@ -239,6 +239,159 @@ def _render_db_snapshot(snapshot, title: str = "Database (latest rows)"):
         st.dataframe(_df(snapshot.get('merge')), use_container_width=True)
 
 
+def _estimate_tokens(text: str, model_name: str = "") -> int:
+    if not text:
+        return 0
+
+    try:
+        import tiktoken
+
+        m = (model_name or "").strip()
+        try:
+            enc = tiktoken.encoding_for_model(m)
+        except Exception:
+            enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        # Rough fallback: ~4 chars per token
+        return max(1, int(len(text) / 4))
+
+
+def _estimate_total_tokens_for_run(run_id: int) -> int:
+    if not run_id:
+        return 0
+
+    try:
+        from backend.init_db import SessionLocal
+        from backend.data_store import get_run_snapshot
+
+        with SessionLocal() as session:
+            snapshot = get_run_snapshot(session, run_id)
+
+        if not snapshot:
+            return 0
+
+        linked = snapshot.get('linked') or {}
+
+        def _sum(rows, extra_rows=None):
+            prompt_tokens = 0
+            completion_tokens = 0
+            seen_ids = set()
+
+            def _iter(all_rows):
+                for rr in (all_rows or []):
+                    d = _orm_to_dict(rr) or {}
+                    rid = d.get('id')
+                    if rid is not None:
+                        if rid in seen_ids:
+                            continue
+                        seen_ids.add(rid)
+                    yield d
+
+            for d in _iter(rows):
+                model_name = d.get('model_name') or ""
+                p = d.get('prompt')
+                o = d.get('output')
+                prompt_tokens += _estimate_tokens(str(p) if p is not None else "", model_name=model_name)
+                completion_tokens += _estimate_tokens(str(o) if o is not None else "", model_name=model_name)
+
+            for d in _iter(extra_rows):
+                model_name = d.get('model_name') or ""
+                p = d.get('prompt')
+                o = d.get('output')
+                prompt_tokens += _estimate_tokens(str(p) if p is not None else "", model_name=model_name)
+                completion_tokens += _estimate_tokens(str(o) if o is not None else "", model_name=model_name)
+
+            return prompt_tokens + completion_tokens
+
+        total = 0
+        total += _sum(snapshot.get('soil'), extra_rows=linked.get('soil'))
+        total += _sum(snapshot.get('water'), extra_rows=linked.get('water'))
+        total += _sum(snapshot.get('weather'), extra_rows=linked.get('weather'))
+        total += _sum(snapshot.get('stage'))
+        total += _sum(snapshot.get('nutrient'))
+        total += _sum(snapshot.get('pest'))
+        total += _sum(snapshot.get('disease'))
+        total += _sum(snapshot.get('irrigation'))
+        total += _sum(snapshot.get('merge'))
+        return total
+    except Exception:
+        return 0
+
+
+def _estimate_token_breakdown_for_run(run_id: int):
+    if not run_id:
+        return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+
+    try:
+        from backend.init_db import SessionLocal
+        from backend.data_store import get_run_snapshot
+
+        with SessionLocal() as session:
+            snapshot = get_run_snapshot(session, run_id)
+
+        if not snapshot:
+            return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+
+        linked = snapshot.get('linked') or {}
+
+        def _sum_breakdown(rows, extra_rows=None):
+            prompt_tokens = 0
+            completion_tokens = 0
+            seen_ids = set()
+
+            def _iter(all_rows):
+                for rr in (all_rows or []):
+                    d = _orm_to_dict(rr) or {}
+                    rid = d.get('id')
+                    if rid is not None:
+                        if rid in seen_ids:
+                            continue
+                        seen_ids.add(rid)
+                    yield d
+
+            for d in _iter(rows):
+                model_name = d.get('model_name') or ""
+                p = d.get('prompt')
+                o = d.get('output')
+                prompt_tokens += _estimate_tokens(str(p) if p is not None else "", model_name=model_name)
+                completion_tokens += _estimate_tokens(str(o) if o is not None else "", model_name=model_name)
+
+            for d in _iter(extra_rows):
+                model_name = d.get('model_name') or ""
+                p = d.get('prompt')
+                o = d.get('output')
+                prompt_tokens += _estimate_tokens(str(p) if p is not None else "", model_name=model_name)
+                completion_tokens += _estimate_tokens(str(o) if o is not None else "", model_name=model_name)
+
+            return prompt_tokens, completion_tokens
+
+        p_total = 0
+        c_total = 0
+
+        for p, c in [
+            _sum_breakdown(snapshot.get('soil'), extra_rows=linked.get('soil')),
+            _sum_breakdown(snapshot.get('water'), extra_rows=linked.get('water')),
+            _sum_breakdown(snapshot.get('weather'), extra_rows=linked.get('weather')),
+            _sum_breakdown(snapshot.get('stage')),
+            _sum_breakdown(snapshot.get('nutrient')),
+            _sum_breakdown(snapshot.get('pest')),
+            _sum_breakdown(snapshot.get('disease')),
+            _sum_breakdown(snapshot.get('irrigation')),
+            _sum_breakdown(snapshot.get('merge')),
+        ]:
+            p_total += p
+            c_total += c
+
+        return {
+            'prompt_tokens': p_total,
+            'completion_tokens': c_total,
+            'total_tokens': p_total + c_total,
+        }
+    except Exception:
+        return {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+
+
 nav = st.radio(
     "Navigation",
     options=["Agents", "Logs"],
@@ -434,16 +587,27 @@ if nav == "Logs":
 
 
 if nav == "Agents":
-    pass
+    with st.expander("Tokens", expanded=False):
+        last_run_id = st.session_state.get('last_run_id')
+        if last_run_id is None:
+            st.caption("Run any agent to see token usage.")
+        else:
+            tok = _estimate_token_breakdown_for_run(last_run_id)
+            st.markdown(f"**Prompt tokens (latest run):** {tok.get('prompt_tokens', 0)}")
+            st.markdown(f"**Generation tokens (latest run):** {tok.get('completion_tokens', 0)}")
+            st.markdown(f"**Total tokens (latest run):** {tok.get('total_tokens', 0)}")
 
 
 # Initialize session state
 if 'selected_agent' not in st.session_state:
     st.session_state.selected_agent = None
+
 if 'agent_outputs' not in st.session_state:
     st.session_state.agent_outputs = {}
+
 if 'custom_prompts' not in st.session_state:
     st.session_state.custom_prompts = {}
+
 if 'prompt_source_preference' not in st.session_state:
     st.session_state.prompt_source_preference = {}
 if 'temperature' not in st.session_state:

@@ -7,10 +7,12 @@ langchain-openai
 langchain-groq
 langgraph-cli[inmem]
 Together
-request
+requests
 streamlit
 streamlit-folium
-psycopg2
+psycopg2-binary
 anthropic
 google-generativeai
+fastapi
+uvicorn
 

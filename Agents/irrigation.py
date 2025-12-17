@@ -291,6 +291,8 @@ def irrigation_agent(
             max_tokens=max_tokens,
         )
 
+        final_text = text
+
         if save_to_db:
             try:
                 from backend.init_db import SessionLocal
